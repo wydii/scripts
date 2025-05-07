@@ -1,13 +1,12 @@
 #!/bin/bash
 # === Setup Dropbear to allow remote LUKS unlocking over SSH ===
 
-#!/bin/bash
-
 set -e
 
 BACKUP_DIR="./dropbear-backups-$(date +%Y%m%d%H%M%S)"
 INITRAMFS_CONF="/etc/initramfs-tools/initramfs.conf"
 DROPBEAR_AUTH_KEYS="/etc/dropbear/initramfs/authorized_keys"
+DROPBEAR_CONF="/etc/dropbear/initramfs/dropbear.conf"
 
 # Logging helper function
 log() {
@@ -28,6 +27,7 @@ mkdir -p "$BACKUP_DIR"
 log "Backing up critical files..."
 [[ -f "$INITRAMFS_CONF" ]] && sudo cp "$INITRAMFS_CONF" "$BACKUP_DIR/initramfs.conf.bak"
 [[ -f "$DROPBEAR_AUTH_KEYS" ]] && sudo cp "$DROPBEAR_AUTH_KEYS" "$BACKUP_DIR/authorized_keys.bak"
+[[ -f "$DROPBEAR_CONF" ]] && sudo cp "$DROPBEAR_CONF" "$BACKUP_DIR/dropbear.conf.bak"
 log "Backup complete."
 
 # 3. Ensure dropbear-initramfs is installed
@@ -58,7 +58,12 @@ else
     fi
 fi
 
-# 5. Detect network interface and current config
+# 5. Configure Dropbear options
+log "Configuring Dropbear..."
+echo "DROPBEAR_OPTIONS=\"-p 2222\"" | sudo tee "$DROPBEAR_CONF" > /dev/null
+log "Dropbear will listen on port 2222."
+
+# 6. Detect network interface and current config
 log "Detecting current network setup..."
 primary_iface=$(ip route | grep default | awk '{print $5}' | head -n 1)
 ip_address=$(ip -4 addr show "$primary_iface" | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n 1)
@@ -91,7 +96,7 @@ log "Gateway: $gateway"
 log "Netmask: $netmask"
 log "Hostname: $hostname"
 
-# 6. Prompt for static vs dynamic
+# 7. Prompt for static vs dynamic
 read -p "❓ Do you want to use a STATIC IP during early boot? (y/n): " use_static
 use_static=${use_static,,}  # to lowercase
 
@@ -111,18 +116,19 @@ else
     autoconf="dhcp"
 fi
 
-# 7. Configure initramfs.conf
+# 8. Configure initramfs.conf
 log "Configuring initramfs.conf..."
 sudo sed -i '/^IP=/d' "$INITRAMFS_CONF"
 echo "IP=$ip_address::$gateway:$netmask:$hostname:$primary_iface:$autoconf" | sudo tee -a "$INITRAMFS_CONF" > /dev/null
 log "IP configuration added: $ip_address::$gateway:$netmask:$hostname:$primary_iface:$autoconf"
 
-# 8. Rebuild initramfs
+# 9. Rebuild initramfs
 log "Rebuilding initramfs..."
 if ! sudo update-initramfs -u; then
     error "Failed to rebuild initramfs. Restoring backups..."
     [[ -f "$BACKUP_DIR/initramfs.conf.bak" ]] && sudo cp "$BACKUP_DIR/initramfs.conf.bak" "$INITRAMFS_CONF"
     [[ -f "$BACKUP_DIR/authorized_keys.bak" ]] && sudo cp "$BACKUP_DIR/authorized_keys.bak" "$DROPBEAR_AUTH_KEYS"
+    [[ -f "$BACKUP_DIR/dropbear.conf.bak" ]] && sudo cp "$BACKUP_DIR/dropbear.conf.bak" "$DROPBEAR_CONF"
     log "Backups restored. Exiting."
     exit 1
 fi
