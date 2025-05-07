@@ -1,52 +1,71 @@
 #!/bin/bash
 # === Setup Dropbear to allow remote LUKS unlocking over SSH ===
 
+#!/bin/bash
+
 set -e
 
-echo -e "\n=== 🔐 Starting Dropbear LUKS Unlock Setup ==="
+BACKUP_DIR="./dropbear-backups-$(date +%Y%m%d%H%M%S)"
+INITRAMFS_CONF="/etc/initramfs-tools/initramfs.conf"
+DROPBEAR_AUTH_KEYS="/etc/dropbear/initramfs/authorized_keys"
 
-# 1. Ensure dropbear-initramfs is installed
+# Logging helper function
+log() {
+    echo -e "[INFO] $1"
+}
+
+error() {
+    echo -e "[ERROR] $1" >&2
+}
+
+log "=== 🔐 Starting Dropbear LUKS Unlock Setup ==="
+
+# 1. Create backup directory
+log "Creating backup directory: $BACKUP_DIR"
+mkdir -p "$BACKUP_DIR"
+
+# 2. Backup critical files
+log "Backing up critical files..."
+[[ -f "$INITRAMFS_CONF" ]] && sudo cp "$INITRAMFS_CONF" "$BACKUP_DIR/initramfs.conf.bak"
+[[ -f "$DROPBEAR_AUTH_KEYS" ]] && sudo cp "$DROPBEAR_AUTH_KEYS" "$BACKUP_DIR/authorized_keys.bak"
+log "Backup complete."
+
+# 3. Ensure dropbear-initramfs is installed
 if ! dpkg -s dropbear-initramfs &> /dev/null; then
-    echo "📦 Installing dropbear-initramfs..."
+    log "Installing dropbear-initramfs..."
     sudo apt update && sudo apt install -y dropbear-initramfs
 else
-    echo "✅ dropbear-initramfs is already installed."
+    log "dropbear-initramfs is already installed."
 fi
 
-# 2. Setup SSH key
-echo "---- 🔑 Setting up SSH keys ----"
+# 4. Setup SSH key
+log "Setting up SSH keys..."
 if [[ -f ssh_auth ]]; then
-    echo "✅ Found ssh_auth file. Installing authorized key..."
+    log "Found ssh_auth file. Installing authorized key..."
     sudo mkdir -p /etc/dropbear/initramfs
-    sudo cp ssh_auth /etc/dropbear/initramfs/authorized_keys
-    sudo chmod 600 /etc/dropbear/initramfs/authorized_keys
+    sudo cp ssh_auth "$DROPBEAR_AUTH_KEYS"
+    sudo chmod 600 "$DROPBEAR_AUTH_KEYS"
 else
-    echo "⚠️  No ssh_auth file found."
-    
+    log "No ssh_auth file found. Checking ~/.ssh/authorized_keys..."
     if [[ -f ~/.ssh/authorized_keys ]]; then
-        read -p "❓ Use your current ~/.ssh/authorized_keys for Dropbear? (y/n): " use_existing_keys
-        if [[ "$use_existing_keys" =~ ^[Yy]$ ]]; then
-            echo "✅ Using ~/.ssh/authorized_keys for Dropbear."
-            sudo mkdir -p /etc/dropbear/initramfs
-            sudo cp ~/.ssh/authorized_keys /etc/dropbear/initramfs/authorized_keys
-            sudo chmod 600 /etc/dropbear/initramfs/authorized_keys
-        else
-            echo "❌ ERROR: No SSH keys provided. Please add a key to ssh_auth or ~/.ssh/authorized_keys."
-            exit 1
-        fi
+        log "Using ~/.ssh/authorized_keys for Dropbear."
+        sudo mkdir -p /etc/dropbear/initramfs
+        sudo cp ~/.ssh/authorized_keys "$DROPBEAR_AUTH_KEYS"
+        sudo chmod 600 "$DROPBEAR_AUTH_KEYS"
     else
-        echo "❌ ERROR: Neither ssh_auth nor ~/.ssh/authorized_keys found."
+        error "No SSH keys found. Please add a key to ssh_auth or ~/.ssh/authorized_keys."
         exit 1
     fi
 fi
 
-# 3. Detect network interface and current config
-echo "---- 🌐 Detecting current network setup ----"
+# 5. Detect network interface and current config
+log "Detecting current network setup..."
 primary_iface=$(ip route | grep default | awk '{print $5}' | head -n 1)
 ip_address=$(ip -4 addr show "$primary_iface" | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n 1)
 gateway=$(ip route | grep default | awk '{print $3}' | head -n 1)
-cidr=$(ip -o -f inet addr show "$primary_iface" | awk '{print $4}' | cut -d/ -f2 | head -n 1)
 
+# Convert CIDR to netmask
+cidr=$(ip -o -f inet addr show "$primary_iface" | awk '{print $4}' | cut -d/ -f2 | head -n 1)
 function cidr_to_netmask() {
     local i mask=""
     local bits=$1
@@ -64,47 +83,52 @@ function cidr_to_netmask() {
 }
 
 netmask=$(cidr_to_netmask "$cidr")
+hostname=$(hostname)
 
-echo "✅ Detected:"
-echo "   ➤ Interface: $primary_iface"
-echo "   ➤ IP: $ip_address"
-echo "   ➤ Gateway: $gateway"
-echo "   ➤ Netmask: $netmask"
+log "Detected interface: $primary_iface"
+log "Client IP: $ip_address"
+log "Gateway: $gateway"
+log "Netmask: $netmask"
+log "Hostname: $hostname"
 
-# 4. Prompt for static vs dynamic
+# 6. Prompt for static vs dynamic
 read -p "❓ Do you want to use a STATIC IP during early boot? (y/n): " use_static
 use_static=${use_static,,}  # to lowercase
 
+autoconf="none"
 if [[ "$use_static" == "y" ]]; then
     read -p "🌐 Confirm or enter STATIC IP [$ip_address]: " ip_input
     read -p "🌐 Confirm or enter GATEWAY [$gateway]: " gw_input
     read -p "🌐 Confirm or enter NETMASK [$netmask]: " mask_input
+    read -p "🌐 Confirm or enter HOSTNAME [$hostname]: " hostname_input
 
     ip_address=${ip_input:-$ip_address}
     gateway=${gw_input:-$gateway}
     netmask=${mask_input:-$netmask}
-
-    echo "✅ Using static config:"
-    echo "   ➤ IP: $ip_address"
-    echo "   ➤ Gateway: $gateway"
-    echo "   ➤ Netmask: $netmask"
-
-    echo "💾 Writing static config to /etc/initramfs-tools/initramfs.conf"
-    echo "IP=$ip_address::$gateway:$netmask::${primary_iface}:none" | sudo tee /etc/initramfs-tools/initramfs.conf > /dev/null
+    hostname=${hostname_input:-$hostname}
+    autoconf="none"
 else
-    echo "ℹ️ Keeping DHCP (dynamic IP) — clearing initramfs.conf IP config."
-    sudo sed -i '/^IP=/d' /etc/initramfs-tools/initramfs.conf
+    autoconf="dhcp"
 fi
 
-# 5. Rebuild initramfs
-echo "---- 🛠️ Rebuilding initramfs ----"
-sudo update-initramfs -u
+# 7. Configure initramfs.conf
+log "Configuring initramfs.conf..."
+sudo sed -i '/^IP=/d' "$INITRAMFS_CONF"
+echo "IP=$ip_address::$gateway:$netmask:$hostname:$primary_iface:$autoconf" | sudo tee -a "$INITRAMFS_CONF" > /dev/null
+log "IP configuration added: $ip_address::$gateway:$netmask:$hostname:$primary_iface:$autoconf"
 
-echo -e "\n🎉 Dropbear early boot SSH setup is complete!"
-echo "You can connect after reboot with:"
-echo "   ssh -p 2222 root@$ip_address"
-echo "Then unlock the drive using:"
-echo "   cryptroot-unlock"
+# 8. Rebuild initramfs
+log "Rebuilding initramfs..."
+if ! sudo update-initramfs -u; then
+    error "Failed to rebuild initramfs. Restoring backups..."
+    [[ -f "$BACKUP_DIR/initramfs.conf.bak" ]] && sudo cp "$BACKUP_DIR/initramfs.conf.bak" "$INITRAMFS_CONF"
+    [[ -f "$BACKUP_DIR/authorized_keys.bak" ]] && sudo cp "$BACKUP_DIR/authorized_keys.bak" "$DROPBEAR_AUTH_KEYS"
+    log "Backups restored. Exiting."
+    exit 1
+fi
 
-echo -e "\n==== ✅ All Done ====\n"
+log "Setup complete! On next boot, connect with 'ssh -p 2222 root@$ip_address'"
+log "Then unlock the drive with 'cryptroot-unlock'."
+log "=== ✅ All Done ==="
+
 
