@@ -14,10 +14,20 @@ prereqs)
     ;;
 esac
 
-NETBIRD_BIN="/snap/bin/netbird"
-NETBIRD_SOCKET_DIR="/var/snap/netbird/common"
-NETBIRD_SOCK_FILE="/var/snap/netbird/common/netbird.sock"
-NETBIRD_CONFIG_DIR="/var/snap/netbird"
+# Define possible locations for the Netbird binary
+NETBIRD_BIN_LOCATIONS="/usr/bin/netbird /bin/netbird /sbin/netbird"
+NETBIRD_BIN=""
+
+# Find the first available Netbird binary
+for bin in $NETBIRD_BIN_LOCATIONS; do
+    if [ -x "$bin" ]; then
+        NETBIRD_BIN="$bin"
+        break
+    fi
+done
+
+NETBIRD_CONFIG_FILE="/etc/netbird/config.json"
+NETBIRD_SOCK_FILE="/var/run/netbird.sock"
 NETBIRD_LOG="/run/netbird-init.log"
 
 # Ensure log file exists
@@ -25,34 +35,91 @@ mkdir -p /run
 exec >> "$NETBIRD_LOG" 2>&1
 
 log() {
-    echo "[INFO] $1"
+    message="[INFO] $1"
+    echo "$message"
+    echo "$message" > /dev/console
+}
+
+warn() {
+    message="[WARNING] $1"
+    echo "$message"
+    echo "$message" > /dev/console
 }
 
 error() {
-    echo "[ERROR] $1" >&2
-    exit 1
+    message="[ERROR] $1"
+    echo "$message" >&2
+    echo "$message" > /dev/console
+    # Don't exit by default, return error code instead
+    return 1
 }
 
 log "========= ATTEMPTING TO START NETBIRD =========="
+log "time: $(date)"
+
+# Get directory paths
+CONFIG_DIR="$(dirname "$NETBIRD_CONFIG_FILE")"
+SOCK_DIR="$(dirname "$NETBIRD_SOCK_FILE")"
 
 # Ensure required directories are present in initramfs
-mkdir -p "$NETBIRD_CONFIG_DIR"
+log "Creating configuration directory..."
+mkdir -p "$CONFIG_DIR"
+
+# Custom check if directory is mounted (fallback if mountpoint not available)
+check_mounted() {
+    if command -v mountpoint >/dev/null 2>&1; then
+        mountpoint -q "$1"
+        return $?
+    else
+        # Fallback method using mount command
+        mount | grep -q " on $1 "
+        return $?
+    fi
+}
+
+# Make sure directories exist
+mkdir -p "/mnt/rootfs$SOCK_DIR" 2>/dev/null || warn "Could not create /mnt/rootfs$SOCK_DIR"
+mkdir -p "$SOCK_DIR" 2>/dev/null || warn "Could not create $SOCK_DIR"
 
 # Mount the socket directory if not already mounted
-if ! mountpoint -q "$NETBIRD_SOCKET_DIR"; then
+if ! check_mounted "$SOCK_DIR"; then
     log "Mounting Netbird socket directory..."
-    mount --bind /mnt/rootfs$NETBIRD_SOCKET_DIR "$NETBIRD_SOCKET_DIR" || error "Failed to bind-mount Netbird socket directory."
+    
+    # Only attempt mount if both directories exist
+    if [ -d "/mnt/rootfs$SOCK_DIR" ] && [ -d "$SOCK_DIR" ]; then
+        if mount --bind "/mnt/rootfs$SOCK_DIR" "$SOCK_DIR"; then
+            log "Socket directory mounted successfully."
+        else
+            warn "Failed to bind-mount Netbird socket directory. Continuing anyway."
+        fi
+    else
+        warn "Socket directories don't exist yet. Will attempt to use local socket."
+    fi
 else
     log "Netbird socket directory already mounted."
 fi
 
-# Start Netbird
-if [ -x "$NETBIRD_BIN" ]; then
-    log "Starting Netbird..."
-    "$NETBIRD_BIN" up || error "Failed to bring up Netbird."
-    log "Netbird is up."
+# Start Netbird - look for binary in multiple locations if primary is missing
+if [ -n "$NETBIRD_BIN" ]; then
+    log "Using Netbird binary found at $NETBIRD_BIN"
+    if "$NETBIRD_BIN" up --daemon-addr "unix://$NETBIRD_SOCK_FILE"; then
+        log "Netbird is up."
+    else
+        error "Failed to bring up Netbird, but continuing boot process."
+    fi
 else
-    error "Netbird binary not found at $NETBIRD_BIN."
+    # Try to locate binary as last resort
+    for path in /usr/bin /bin /sbin; do
+        if [ -x "$path/netbird" ]; then
+            log "Found Netbird binary at $path/netbird"
+            if "$path/netbird" up --daemon-addr "unix://$NETBIRD_SOCK_FILE"; then
+                log "Netbird is up."
+                exit 0
+            fi
+        fi
+    done
+    error "Netbird binary not found in standard locations, but continuing boot process."
 fi
 
 log "========= NETBIRD STARTUP COMPLETE =========="
+exit 0

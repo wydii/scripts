@@ -1,0 +1,74 @@
+#!/bin/sh
+set -e
+
+PREREQ=""
+
+prereqs() {
+    echo "$PREREQ"
+}
+
+case "$1" in
+prereqs)
+    prereqs
+    exit 0
+    ;;
+esac
+
+# Source hook functions
+. /usr/share/initramfs-tools/hook-functions
+
+# Define paths
+NETBIRD_BIN="/usr/bin/netbird"
+NETBIRD_CONFIG_FILE="/etc/netbird/config.json"
+NETBIRD_SOCK_FILE="/var/run/netbird.sock"
+
+# Derive directory paths
+CONFIG_DIR="$(dirname "$NETBIRD_CONFIG_FILE")"
+SOCK_DIR="$(dirname "$NETBIRD_SOCK_FILE")"
+
+# Check if Netbird binary exists
+if [ -x "$NETBIRD_BIN" ]; then
+    echo "[Netbird] Copying Netbird binary..."
+    # Use copy_exec to properly handle dependencies
+    copy_exec "$NETBIRD_BIN" "$DESTDIR$NETBIRD_BIN"
+    
+    # Verify the binary was copied successfully
+    if [ -x "$DESTDIR$NETBIRD_BIN" ]; then
+        echo "[Netbird] Netbird binary copied to $DESTDIR$NETBIRD_BIN"
+        # Make sure it has execute permissions
+        chmod +x "$DESTDIR$NETBIRD_BIN"
+        echo "[Netbird] Execute permissions set on $DESTDIR$NETBIRD_BIN"
+    else
+        echo "[Netbird] Error: Failed to copy Netbird binary to $DESTDIR$NETBIRD_BIN"
+        # Copy binary using regular cp as fallback
+        mkdir -p "$(dirname "$DESTDIR$NETBIRD_BIN")"
+        cp -a "$NETBIRD_BIN" "$DESTDIR$NETBIRD_BIN"
+        chmod +x "$DESTDIR$NETBIRD_BIN"
+        echo "[Netbird] Attempted fallback copy of Netbird binary"
+    fi
+else
+    echo "[Netbird] Error: Netbird binary not found at $NETBIRD_BIN"
+    exit 1
+fi
+
+# Check if Netbird configuration directory exists
+if [ -f "$NETBIRD_CONFIG_FILE" ]; then
+    echo "[Netbird] Copying Netbird configuration..."
+    mkdir -p "$DESTDIR$CONFIG_DIR"
+    cp -a "$NETBIRD_CONFIG_FILE" "$DESTDIR$NETBIRD_CONFIG_FILE"
+    echo "[Netbird] Configuration copied to $DESTDIR$NETBIRD_CONFIG_FILE"
+else
+    echo "[Netbird] Warning: Netbird configuration file not found at $NETBIRD_CONFIG_FILE"
+fi
+
+# Check if Netbird socket file exists
+if [ -S "$NETBIRD_SOCK_FILE" ]; then
+    echo "[Netbird] Copying Netbird socket file..."
+    mkdir -p "$DESTDIR$SOCK_DIR"
+    cp -a "$NETBIRD_SOCK_FILE" "$DESTDIR$NETBIRD_SOCK_FILE"
+    echo "[Netbird] Socket file copied to $DESTDIR$NETBIRD_SOCK_FILE"
+else
+    echo "[Netbird] Warning: Netbird socket file not found at $NETBIRD_SOCK_FILE"
+fi
+
+echo "[Netbird] Hook script completed successfully."
