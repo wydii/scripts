@@ -29,6 +29,7 @@ done
 NETBIRD_CONFIG_FILE="/etc/netbird/config.json"
 NETBIRD_SOCK_FILE="/var/run/netbird.sock"
 NETBIRD_LOG="/run/netbird-init.log"
+DAEMON_LOG="/run/netbird-daemon.log"  # Updated dedicated daemon log file
 
 # Ensure log file exists
 mkdir -p /run
@@ -81,6 +82,15 @@ check_mounted() {
 mkdir -p "/mnt/rootfs$SOCK_DIR" 2>/dev/null || warn "Could not create /mnt/rootfs$SOCK_DIR"
 mkdir -p "$SOCK_DIR" 2>/dev/null || warn "Could not create $SOCK_DIR"
 
+# Verify config file exists and log contents for debugging
+if [ -f "$NETBIRD_CONFIG_FILE" ]; then
+    log "Netbird config found at $NETBIRD_CONFIG_FILE"
+    # Optionally show config file structure (not contents for security)
+    log "Config file size: $(stat -c %s "$NETBIRD_CONFIG_FILE" 2>/dev/null || echo "unknown") bytes"
+else
+    warn "Netbird config file not found at $NETBIRD_CONFIG_FILE"
+fi
+
 # Mount the socket directory if not already mounted
 if ! check_mounted "$SOCK_DIR"; then
     log "Mounting Netbird socket directory..."
@@ -99,12 +109,19 @@ else
     log "Netbird socket directory already mounted."
 fi
 
-# Start Netbird - look for binary in multiple locations if primary is missing
-if [ -n "$NETBIRD_BIN" ]; then
-    log "Using Netbird binary found at $NETBIRD_BIN"
+start_netbird_daemon() {
+    local netbird_bin="$1"
+    log "Using Netbird binary found at $netbird_bin"
+    
+    # Log binary details
+    log "Netbird binary size: $(stat -c %s "$netbird_bin" 2>/dev/null || echo "unknown") bytes"
+    log "Netbird binary permissions: $(stat -c %a "$netbird_bin" 2>/dev/null || echo "unknown")"
+    
+    # Start with more debug output and redirect to dedicated log file
+    log "Starting Netbird daemon with: $netbird_bin daemon --foreground --config $NETBIRD_CONFIG_FILE --sock $NETBIRD_SOCK_FILE"
     
     # Start the daemon with output capture
-    "$NETBIRD_BIN" daemon --foreground --config "$NETBIRD_CONFIG_FILE" --sock "$NETBIRD_SOCK_FILE" > "$NETBIRD_LOG.daemon" 2>&1 &
+    "$netbird_bin" daemon --foreground --config "$NETBIRD_CONFIG_FILE" --sock "$NETBIRD_SOCK_FILE" > "$DAEMON_LOG" 2>&1 &
     DAEMON_PID=$!
     log "Netbird daemon started with PID: $DAEMON_PID"
 
@@ -114,44 +131,40 @@ if [ -n "$NETBIRD_BIN" ]; then
     # Check if daemon is still running
     if kill -0 $DAEMON_PID 2>/dev/null; then
         log "Netbird daemon started successfully"
+        return 0
     else
-        error "Netbird daemon failed to start properly. See $NETBIRD_LOG.daemon for details"
-        # Output last 10 lines of daemon log
-        if [ -f "$NETBIRD_LOG.daemon" ]; then
-            log "--- Last daemon log entries ---"
-            tail -n 10 "$NETBIRD_LOG.daemon" >> "$NETBIRD_LOG"
-            log "-----------------------------"
+        error "Netbird daemon failed to start properly. See $DAEMON_LOG for details"
+        # Always output complete daemon log on failure
+        if [ -f "$DAEMON_LOG" ]; then
+            log "--- START DAEMON LOG ---"
+            cat "$DAEMON_LOG" >> "$NETBIRD_LOG"
+            cat "$DAEMON_LOG" > /dev/console  # Make sure it shows on console too
+            log "--- END DAEMON LOG ---"
+        else
+            log "Daemon log file not found at $DAEMON_LOG"
         fi
+        return 1
     fi
+}
+
+# Start Netbird - look for binary in multiple locations if primary is missing
+if [ -n "$NETBIRD_BIN" ]; then
+    start_netbird_daemon "$NETBIRD_BIN"
 else
     # Try to locate binary as last resort
+    daemon_started=false
     for path in /usr/bin /bin /sbin; do
-        if [ -x "$path/netbird" ]; then
-            log "Found Netbird binary at $path/netbird"
-            
-            # Start the daemon with output capture
-            "$path/netbird" daemon --foreground --config "$NETBIRD_CONFIG_FILE" --sock "$NETBIRD_SOCK_FILE" > "$NETBIRD_LOG.daemon" 2>&1 &
-            DAEMON_PID=$!
-            log "Netbird daemon started with PID: $DAEMON_PID"
-
-            # Give it time to initialize
-            sleep 5
-
-            # Check if daemon is still running
-            if kill -0 $DAEMON_PID 2>/dev/null; then
-                log "Netbird daemon started successfully"
-            else
-                error "Netbird daemon failed to start properly. See $NETBIRD_LOG.daemon for details"
-                # Output last 10 lines of daemon log
-                if [ -f "$NETBIRD_LOG.daemon" ]; then
-                    log "--- Last daemon log entries ---"
-                    tail -n 10 "$NETBIRD_LOG.daemon" >> "$NETBIRD_LOG"
-                    log "-----------------------------"
-                fi
+        if [ -x "$path/netbird" ] && [ "$daemon_started" = false ]; then
+            if start_netbird_daemon "$path/netbird"; then
+                daemon_started=true
+                break
             fi
         fi
     done
-    error "Netbird binary not found in standard locations, but continuing boot process."
+    
+    if [ "$daemon_started" = false ]; then
+        error "Netbird binary not found in standard locations, but continuing boot process."
+    fi
 fi
 
 log "========= NETBIRD STARTUP COMPLETE =========="
