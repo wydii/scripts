@@ -102,19 +102,47 @@ fi
 # Start Netbird - look for binary in multiple locations if primary is missing
 if [ -n "$NETBIRD_BIN" ]; then
     log "Using Netbird binary found at $NETBIRD_BIN"
-    if "$NETBIRD_BIN" up --daemon-addr "unix://$NETBIRD_SOCK_FILE"; then
-        log "Netbird is up."
+    
+    # First start the Netbird service
+    log "Starting Netbird service..."
+    if "$NETBIRD_BIN" service start --daemon-addr "unix://$NETBIRD_SOCK_FILE" --config "$NETBIRD_CONFIG_FILE"; then
+        log "Netbird service started successfully."
     else
-        error "Failed to bring up Netbird, but continuing boot process."
+        warn "Failed to start Netbird service, but will still try to bring up the client."
+    fi
+    
+    # Allow service to initialize
+    sleep 2
+    
+    # Now attempt to bring up the Netbird client
+    if "$NETBIRD_BIN" up --daemon-addr "unix://$NETBIRD_SOCK_FILE"; then
+        log "Netbird client is up."
+    else
+        error "Failed to bring up Netbird client, but continuing boot process."
     fi
 else
     # Try to locate binary as last resort
     for path in /usr/bin /bin /sbin; do
         if [ -x "$path/netbird" ]; then
             log "Found Netbird binary at $path/netbird"
-            if "$path/netbird" up --daemon-addr "unix://$NETBIRD_SOCK_FILE"; then
-                log "Netbird is up."
-                exit 0
+            
+            # First start the Netbird service
+            log "Starting Netbird service..."
+            if "$path/netbird" service start --daemon-addr "unix://$NETBIRD_SOCK_FILE" --config "$NETBIRD_CONFIG_FILE"; then
+                log "Netbird service started successfully."
+                
+                # Allow service to initialize
+                sleep 2
+                
+                # Now attempt to bring up the Netbird client
+                if "$path/netbird" up --daemon-addr "unix://$NETBIRD_SOCK_FILE"; then
+                    log "Netbird client is up."
+                    exit 0
+                else
+                    error "Failed to bring up Netbird client, but continuing boot process."
+                fi
+            else
+                warn "Failed to start Netbird service using $path/netbird."
             fi
         fi
     done
