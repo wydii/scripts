@@ -103,22 +103,25 @@ fi
 if [ -n "$NETBIRD_BIN" ]; then
     log "Using Netbird binary found at $NETBIRD_BIN"
     
-    # Start Netbird daemon directly in foreground mode with proper daemon address
-    log "Starting Netbird daemon in foreground mode..."
-    # Use nohup to keep it running after our script exits
-    nohup "$NETBIRD_BIN" up --daemon-addr "unix://$NETBIRD_SOCK_FILE" --config "$NETBIRD_CONFIG_FILE" --foreground-mode >/dev/null 2>&1 &
-    # Store PID for potential later use
-    NETBIRD_PID=$!
-    log "Netbird daemon started with PID: $NETBIRD_PID"
-    
-    # Allow daemon to initialize
-    sleep 2
-    
-    # Check if the process is still running
-    if kill -0 $NETBIRD_PID 2>/dev/null; then
-        log "Netbird daemon is running successfully."
+    # Start the daemon with output capture
+    "$NETBIRD_BIN" daemon --foreground --config "$NETBIRD_CONFIG_FILE" --sock "$NETBIRD_SOCK_FILE" > "$NETBIRD_LOG.daemon" 2>&1 &
+    DAEMON_PID=$!
+    log "Netbird daemon started with PID: $DAEMON_PID"
+
+    # Give it time to initialize
+    sleep 5
+
+    # Check if daemon is still running
+    if kill -0 $DAEMON_PID 2>/dev/null; then
+        log "Netbird daemon started successfully"
     else
-        error "Netbird daemon failed to start properly."
+        error "Netbird daemon failed to start properly. See $NETBIRD_LOG.daemon for details"
+        # Output last 10 lines of daemon log
+        if [ -f "$NETBIRD_LOG.daemon" ]; then
+            log "--- Last daemon log entries ---"
+            tail -n 10 "$NETBIRD_LOG.daemon" >> "$NETBIRD_LOG"
+            log "-----------------------------"
+        fi
     fi
 else
     # Try to locate binary as last resort
@@ -126,23 +129,25 @@ else
         if [ -x "$path/netbird" ]; then
             log "Found Netbird binary at $path/netbird"
             
-            # Start Netbird daemon directly in foreground mode with proper daemon address
-            log "Starting Netbird daemon in foreground mode..."
-            # Use nohup to keep it running after our script exits
-            nohup "$path/netbird" up --daemon-addr "unix://$NETBIRD_SOCK_FILE" --config "$NETBIRD_CONFIG_FILE" --foreground-mode >/dev/null 2>&1 &
-            # Store PID for potential later use
-            NETBIRD_PID=$!
-            log "Netbird daemon started with PID: $NETBIRD_PID"
-            
-            # Allow daemon to initialize
-            sleep 2
-            
-            # Check if the process is still running
-            if kill -0 $NETBIRD_PID 2>/dev/null; then
-                log "Netbird daemon is running successfully."
-                exit 0
+            # Start the daemon with output capture
+            "$path/netbird" daemon --foreground --config "$NETBIRD_CONFIG_FILE" --sock "$NETBIRD_SOCK_FILE" > "$NETBIRD_LOG.daemon" 2>&1 &
+            DAEMON_PID=$!
+            log "Netbird daemon started with PID: $DAEMON_PID"
+
+            # Give it time to initialize
+            sleep 5
+
+            # Check if daemon is still running
+            if kill -0 $DAEMON_PID 2>/dev/null; then
+                log "Netbird daemon started successfully"
             else
-                error "Netbird daemon failed to start properly."
+                error "Netbird daemon failed to start properly. See $NETBIRD_LOG.daemon for details"
+                # Output last 10 lines of daemon log
+                if [ -f "$NETBIRD_LOG.daemon" ]; then
+                    log "--- Last daemon log entries ---"
+                    tail -n 10 "$NETBIRD_LOG.daemon" >> "$NETBIRD_LOG"
+                    log "-----------------------------"
+                fi
             fi
         fi
     done
