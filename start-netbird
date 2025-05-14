@@ -121,7 +121,7 @@ start_netbird_daemon() {
     log "Starting Netbird daemon with: $netbird_bin service install --config $NETBIRD_CONFIG_FILE --daemon-addr $NETBIRD_SOCK_FILE"
     
     # Start the daemon with output capture
-    "$netbird_bin" service install --foreground --config "$NETBIRD_CONFIG_FILE" --daemon-addr "$NETBIRD_SOCK_FILE" > "$DAEMON_LOG" 2>&1 & 
+    "$netbird_bin" service install --config "$NETBIRD_CONFIG_FILE" --daemon-addr "$NETBIRD_SOCK_FILE" > "$DAEMON_LOG" 2>&1 & 
     DAEMON_PID=$!
     log "Netbird daemon started with PID: $DAEMON_PID"
 
