@@ -1,0 +1,58 @@
+#!/bin/sh
+set -e
+
+PREREQ=""
+
+prereqs() {
+    echo "$PREREQ"
+}
+
+case "$1" in
+prereqs)
+    prereqs
+    exit 0
+    ;;
+esac
+
+NETBIRD_BIN="/snap/bin/netbird"
+NETBIRD_SOCKET_DIR="/var/snap/netbird/common"
+NETBIRD_SOCK_FILE="/var/snap/netbird/common/netbird.sock"
+NETBIRD_CONFIG_DIR="/var/snap/netbird"
+NETBIRD_LOG="/run/netbird-init.log"
+
+# Ensure log file exists
+mkdir -p /run
+exec >> "$NETBIRD_LOG" 2>&1
+
+log() {
+    echo "[INFO] $1"
+}
+
+error() {
+    echo "[ERROR] $1" >&2
+    exit 1
+}
+
+log "========= ATTEMPTING TO START NETBIRD =========="
+
+# Ensure required directories are present in initramfs
+mkdir -p "$NETBIRD_CONFIG_DIR"
+
+# Mount the socket directory if not already mounted
+if ! mountpoint -q "$NETBIRD_SOCKET_DIR"; then
+    log "Mounting Netbird socket directory..."
+    mount --bind /mnt/rootfs$NETBIRD_SOCKET_DIR "$NETBIRD_SOCKET_DIR" || error "Failed to bind-mount Netbird socket directory."
+else
+    log "Netbird socket directory already mounted."
+fi
+
+# Start Netbird
+if [ -x "$NETBIRD_BIN" ]; then
+    log "Starting Netbird..."
+    "$NETBIRD_BIN" up || error "Failed to bring up Netbird."
+    log "Netbird is up."
+else
+    error "Netbird binary not found at $NETBIRD_BIN."
+fi
+
+log "========= NETBIRD STARTUP COMPLETE =========="
